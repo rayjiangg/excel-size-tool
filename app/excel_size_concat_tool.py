@@ -553,19 +553,24 @@ class App(tk.Tk):
         self.result_header_row1.configure(text="第1行：  " + "   ".join(row1_parts))
         self.result_header_row2.configure(text="第2行：  " + "   ".join(str(x) for x in row2_parts))
         self.result_header_summary.configure(
-            text=f"当前显示分组：尺码{page_groups[0].size_no} 到 尺码{page_groups[-1].size_no}。导出到 Excel 时会严格按两层表头生成：第1行空+尺码标题，第2行款色/公式变成/尺码号。"
+            text=f"当前显示分组：尺码{page_groups[0].size_no} 到 尺码{page_groups[-1].size_no}。预览表头第2行只显示“款色 / 公式变成 / 1 / 公式变成 / 2 ...”；第1行的“尺码1 / 尺码2 ...”在上方单独展示。"
         )
 
         columns = ["款色"]
+        display_headers = {"款色": "款色"}
         for sc in page_groups:
-            columns.extend([f"公式变成/尺码{sc.size_no}", sc.size_no])
+            formula_key = f"formula_{sc.size_no}"
+            value_key = f"value_{sc.size_no}"
+            columns.extend([formula_key, value_key])
+            display_headers[formula_key] = "公式变成"
+            display_headers[value_key] = sc.size_no
 
         self.result_tree["columns"] = columns
         for item in self.result_tree.get_children():
             self.result_tree.delete(item)
         for col in columns:
-            self.result_tree.heading(col, text=col)
-            self.result_tree.column(col, width=160 if "公式变成" in col or col == "款色" else 90, anchor="center")
+            self.result_tree.heading(col, text=display_headers[col])
+            self.result_tree.column(col, width=160 if col.startswith("formula_") or col == "款色" else 90, anchor="center")
 
         for row in self.preview_rows:
             row_values = [row["款色"]]
