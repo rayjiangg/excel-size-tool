@@ -205,11 +205,11 @@ class WorkbookTransformer:
 
         current_col = 2
         for sc in detect.size_columns:
-            ws.merge_cells(start_row=1, start_column=current_col, end_row=1, end_column=current_col + 1)
             top_left = ws.cell(row=1, column=current_col, value=f"尺码{sc.size_no}")
-            WorkbookTransformer.apply_cell_style(top_left, fill=WorkbookTransformer.WHITE_FILL, bold=False)
             right_cell = ws.cell(row=1, column=current_col + 1, value="")
+            WorkbookTransformer.apply_cell_style(top_left, fill=WorkbookTransformer.WHITE_FILL, bold=False)
             WorkbookTransformer.apply_cell_style(right_cell, fill=WorkbookTransformer.WHITE_FILL, bold=False)
+            ws.merge_cells(start_row=1, start_column=current_col, end_row=1, end_column=current_col + 1)
             current_col += 2
 
         # 第2行：款色 / 公式变成 / 1 / 公式变成 / 2 ...
