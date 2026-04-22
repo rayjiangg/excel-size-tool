@@ -1,1 +1,2 @@
-# excel-size-tool
+openpyxl>=3.1.0
+pyinstaller>=6.0
