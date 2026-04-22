@@ -2,6 +2,7 @@ import math
 import os
 import re
 import traceback
+from copy import copy
 from datetime import datetime
 from dataclasses import dataclass
 from typing import List, Optional
@@ -18,11 +19,6 @@ APP_TITLE = "Excel 款色尺码拼接工具"
 HEADER_SCAN_MAX_ROW = 20
 PREVIEW_MAX_ROWS = 12
 PREVIEW_SIZE_GROUPS_PER_PAGE = 5
-
-BLUE_HEX = "#D9E2F3"
-YELLOW_HEX = "#FFF200"
-WHITE_HEX = "#FFFFFF"
-GRID_HEX = "#B7C3D0"
 
 
 @dataclass
@@ -137,20 +133,18 @@ class WorkbookAnalyzer:
     def build_preview(ws, result: DetectionResult, max_rows: int = PREVIEW_MAX_ROWS):
         preview_rows = []
         for row_idx in range(result.header_row + 1, ws.max_row + 1):
-            color_value = ws.cell(row=row_idx, column=result.color_col_idx).value
-            color_text = WorkbookAnalyzer.normalize_text(color_value)
+            color_text = WorkbookAnalyzer.normalize_text(ws.cell(row=row_idx, column=result.color_col_idx).value)
             if not color_text:
                 continue
 
             row_item = {"row_idx": row_idx, "款色": color_text, "values": []}
             for size_col in result.size_columns:
                 original_value = ws.cell(row=row_idx, column=size_col.col_idx).value
-                concat_value = f"{color_text}{size_col.size_no}"
                 row_item["values"].append(
                     {
                         "size_label": f"尺码{size_col.size_no}",
                         "size_no": size_col.size_no,
-                        "concat_value": concat_value,
+                        "concat_value": f"{color_text}{size_col.size_no}",
                         "original_value": original_value,
                     }
                 )
@@ -183,10 +177,10 @@ class WorkbookTransformer:
 
     @staticmethod
     def apply_cell_style(cell, *, fill=None, bold=False, center=True, font_color=None):
-        cell.border = WorkbookTransformer.THIN_BORDER
+        cell.border = copy(WorkbookTransformer.THIN_BORDER)
         cell.font = Font(bold=bold, color=font_color)
         if fill is not None:
-            cell.fill = fill
+            cell.fill = copy(fill)
         cell.alignment = Alignment(horizontal="center" if center else "left", vertical="center")
 
     @staticmethod
@@ -205,24 +199,32 @@ class WorkbookTransformer:
         sheet_name = WorkbookTransformer.safe_sheet_name(wb, "模型_处理结果")
         ws = wb.create_sheet(sheet_name)
 
+        # 第1行：空 + merged 尺码标题
         ws.cell(row=1, column=1, value="")
         WorkbookTransformer.apply_cell_style(ws.cell(row=1, column=1), fill=WorkbookTransformer.WHITE_FILL)
+
+        current_col = 2
+        for sc in detect.size_columns:
+            ws.merge_cells(start_row=1, start_column=current_col, end_row=1, end_column=current_col + 1)
+            top_left = ws.cell(row=1, column=current_col, value=f"尺码{sc.size_no}")
+            WorkbookTransformer.apply_cell_style(top_left, fill=WorkbookTransformer.WHITE_FILL, bold=False)
+            right_cell = ws.cell(row=1, column=current_col + 1, value="")
+            WorkbookTransformer.apply_cell_style(right_cell, fill=WorkbookTransformer.WHITE_FILL, bold=False)
+            current_col += 2
+
+        # 第2行：款色 / 公式变成 / 1 / 公式变成 / 2 ...
         ws.cell(row=2, column=1, value="款色")
         WorkbookTransformer.apply_cell_style(ws.cell(row=2, column=1), fill=WorkbookTransformer.BLUE_FILL, bold=True)
 
         current_col = 2
         for sc in detect.size_columns:
-            ws.merge_cells(start_row=1, start_column=current_col, end_row=1, end_column=current_col + 1)
-            ws.cell(row=1, column=current_col, value=f"尺码{sc.size_no}")
-            WorkbookTransformer.apply_cell_style(ws.cell(row=1, column=current_col), fill=WorkbookTransformer.WHITE_FILL)
-            WorkbookTransformer.apply_cell_style(ws.cell(row=1, column=current_col + 1), fill=WorkbookTransformer.WHITE_FILL)
-
             ws.cell(row=2, column=current_col, value="公式变成")
-            ws.cell(row=2, column=current_col + 1, value=sc.size_no)
             WorkbookTransformer.apply_cell_style(ws.cell(row=2, column=current_col), fill=WorkbookTransformer.YELLOW_FILL, bold=True)
+            ws.cell(row=2, column=current_col + 1, value=sc.size_no)
             WorkbookTransformer.apply_cell_style(ws.cell(row=2, column=current_col + 1), fill=WorkbookTransformer.BLUE_FILL, bold=True)
             current_col += 2
 
+        # 第3行开始：数据
         target_row = 3
         data_count = 0
         for row_idx in range(detect.header_row + 1, source_ws.max_row + 1):
@@ -231,33 +233,18 @@ class WorkbookTransformer:
                 continue
 
             ws.cell(row=target_row, column=1, value=color_text)
-            WorkbookTransformer.apply_cell_style(ws.cell(row=target_row, column=1))
+            WorkbookTransformer.apply_cell_style(ws.cell(row=target_row, column=1), fill=WorkbookTransformer.WHITE_FILL)
 
             current_col = 2
             for sc in detect.size_columns:
-                ws.cell(row=target_row, column=current_col, value=f"{color_text}{sc.size_no}")
-                ws.cell(row=target_row, column=current_col + 1, value=source_ws.cell(row=row_idx, column=sc.col_idx).value)
-                WorkbookTransformer.apply_cell_style(ws.cell(row=target_row, column=current_col))
-                WorkbookTransformer.apply_cell_style(ws.cell(row=target_row, column=current_col + 1))
+                concat_cell = ws.cell(row=target_row, column=current_col, value=f"{color_text}{sc.size_no}")
+                raw_cell = ws.cell(row=target_row, column=current_col + 1, value=source_ws.cell(row=row_idx, column=sc.col_idx).value)
+                WorkbookTransformer.apply_cell_style(concat_cell, fill=WorkbookTransformer.WHITE_FILL)
+                WorkbookTransformer.apply_cell_style(raw_cell, fill=WorkbookTransformer.WHITE_FILL)
                 current_col += 2
 
             data_count += 1
             target_row += 1
-
-        note_row = target_row + 1
-        ws.cell(row=note_row, column=1, value="说明：黄色列为公式变成结果，蓝色列为对应尺码原值。")
-        ws.cell(row=note_row, column=1).font = Font(color="FF0000", bold=True)
-        ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=max(2, ws.max_column))
-
-        for row in range(1, max(2, ws.max_row) + 1):
-            for col in range(1, ws.max_column + 1):
-                cell = ws.cell(row=row, column=col)
-                WorkbookTransformer.apply_cell_style(
-                    cell,
-                    fill=cell.fill,
-                    bold=bool(cell.font and cell.font.bold),
-                    font_color=cell.font.color.rgb if getattr(cell.font, 'color', None) and getattr(cell.font.color, 'rgb', None) else None,
-                )
 
         ws.freeze_panes = "A3"
         ws.sheet_view.showGridLines = True
@@ -307,7 +294,6 @@ class App(tk.Tk):
         self.preview_rows = []
         self.preview_page = 0
         self.preview_group_pages = 1
-        self.result_header_widgets: List[tk.Widget] = []
 
         self._build_ui()
 
@@ -386,7 +372,6 @@ class App(tk.Tk):
         self.preview_notebook = ttk.Notebook(preview_frame)
         self.preview_notebook.pack(fill="both", expand=True)
 
-        # 源表内容预览
         self.source_preview_tab = ttk.Frame(self.preview_notebook)
         self.preview_notebook.add(self.source_preview_tab, text="源表内容预览")
 
@@ -400,32 +385,26 @@ class App(tk.Tk):
         self.source_tree = ttk.Treeview(source_tree_frame, show="headings")
         self.source_tree.pack(side="left", fill="both", expand=True)
         source_y = ttk.Scrollbar(source_tree_frame, orient="vertical", command=self.source_tree.yview)
+        source_x = ttk.Scrollbar(source_tree_frame, orient="horizontal", command=self.source_tree.xview)
         source_y.pack(side="right", fill="y")
-        self.source_tree.configure(yscrollcommand=source_y.set)
+        source_x.pack(side="bottom", fill="x")
+        self.source_tree.configure(yscrollcommand=source_y.set, xscrollcommand=source_x.set)
 
-        # 结果模板预览
         self.result_preview_tab = ttk.Frame(self.preview_notebook)
         self.preview_notebook.add(self.result_preview_tab, text="结果模板预览")
 
         result_top = ttk.Frame(self.result_preview_tab)
         result_top.pack(fill="x", padx=6, pady=(6, 2))
-
         self.preview_page_label = ttk.Label(result_top, text="预览页：1/1")
         self.preview_page_label.pack(side="left")
         ttk.Button(result_top, text="上一页", command=self.prev_preview_page).pack(side="right", padx=(6, 0))
         ttk.Button(result_top, text="下一页", command=self.next_preview_page).pack(side="right")
 
-        self.result_preview_tip = ttk.Label(
-            self.result_preview_tab,
-            text=f"每页展示最多 {PREVIEW_SIZE_GROUPS_PER_PAGE} 个尺码分组，改为轻量表格预览，滚动会更顺畅。",
-        )
-        self.result_preview_tip.pack(anchor="w", padx=6)
-
-        self.result_header_summary = ttk.Label(
-            self.result_preview_tab,
-            text="",
-            foreground="#444444",
-        )
+        self.result_header_row1 = ttk.Label(self.result_preview_tab, text="第1行：", foreground="#444444")
+        self.result_header_row1.pack(anchor="w", padx=6)
+        self.result_header_row2 = ttk.Label(self.result_preview_tab, text="第2行：", foreground="#444444")
+        self.result_header_row2.pack(anchor="w", padx=6, pady=(0, 4))
+        self.result_header_summary = ttk.Label(self.result_preview_tab, text="", foreground="#444444")
         self.result_header_summary.pack(anchor="w", padx=6, pady=(0, 4))
 
         result_tree_frame = ttk.Frame(self.result_preview_tab)
@@ -508,7 +487,6 @@ class App(tk.Tk):
             header_row = WorkbookAnalyzer.detect_header_row(ws)
             if not header_row:
                 raise ExcelTransformError("自动识别失败：前 20 行内没有同时找到“款色”和尺码列。")
-
             self.header_row_var.set(header_row)
             self.detect_result = WorkbookAnalyzer.detect_columns(ws, header_row)
             self.show_detect_info(self.detect_result)
@@ -527,19 +505,73 @@ class App(tk.Tk):
             f"表头行：{detect.header_row}\n"
             f"款色列：{color_col}（{detect.color_header}）\n"
             f"识别到 {len(detect.size_columns)} 个尺码列：{size_desc}\n"
-            f"输出说明：结果页将按模板格式生成：款色 + 多组【公式变成 / 原尺码值】。"
+            f"输出说明：第1行为空+尺码标题；第2行为 款色 / 公式变成 / 尺码号；第3行开始为数据。"
         )
         self.detect_info.delete("1.0", "end")
         self.detect_info.insert("1.0", text)
 
     def clear_preview(self):
         self.detect_info.delete("1.0", "end")
-        self.source_tree.delete(*self.source_tree.get_children())
-        self.source_tree["columns"] = ()
-        self.result_tree.delete(*self.result_tree.get_children())
-        self.result_tree["columns"] = ()
+        for tree in (getattr(self, "source_tree", None), getattr(self, "result_tree", None)):
+            if tree is not None:
+                tree["columns"] = ()
+                for item in tree.get_children():
+                    tree.delete(item)
         self.preview_page_label.configure(text="预览页：1/1")
+        self.result_header_row1.configure(text="第1行：")
+        self.result_header_row2.configure(text="第2行：")
         self.result_header_summary.configure(text="")
+
+    def build_source_preview(self, detect: DetectionResult):
+        columns = ["源数据行", "款色"] + [f"尺码{s.size_no}" for s in detect.size_columns]
+        self.source_tree["columns"] = columns
+        for item in self.source_tree.get_children():
+            self.source_tree.delete(item)
+        for col in columns:
+            self.source_tree.heading(col, text=col)
+            self.source_tree.column(col, width=120 if col != "款色" else 160, anchor="center")
+
+        for row in self.preview_rows:
+            values = [row["row_idx"], row["款色"]] + [v["original_value"] for v in row["values"]]
+            self.source_tree.insert("", "end", values=values)
+
+    def build_result_preview(self, detect: DetectionResult):
+        size_groups = detect.size_columns
+        self.preview_group_pages = max(1, math.ceil(len(size_groups) / PREVIEW_SIZE_GROUPS_PER_PAGE))
+        self.preview_page = min(self.preview_page, self.preview_group_pages - 1)
+        self.preview_page_label.configure(text=f"预览页：{self.preview_page + 1}/{self.preview_group_pages}")
+
+        start_idx = self.preview_page * PREVIEW_SIZE_GROUPS_PER_PAGE
+        end_idx = min(len(size_groups), start_idx + PREVIEW_SIZE_GROUPS_PER_PAGE)
+        page_groups = size_groups[start_idx:end_idx]
+
+        row1_parts = ["[空]"] + [f"[尺码{sc.size_no}]" for sc in page_groups]
+        row2_parts = ["款色"]
+        for sc in page_groups:
+            row2_parts.extend(["公式变成", sc.size_no])
+
+        self.result_header_row1.configure(text="第1行：  " + "   ".join(row1_parts))
+        self.result_header_row2.configure(text="第2行：  " + "   ".join(str(x) for x in row2_parts))
+        self.result_header_summary.configure(
+            text=f"当前显示分组：尺码{page_groups[0].size_no} 到 尺码{page_groups[-1].size_no}。导出到 Excel 时会严格按两层表头生成：第1行空+尺码标题，第2行款色/公式变成/尺码号。"
+        )
+
+        columns = ["款色"]
+        for sc in page_groups:
+            columns.extend([f"公式变成/尺码{sc.size_no}", sc.size_no])
+
+        self.result_tree["columns"] = columns
+        for item in self.result_tree.get_children():
+            self.result_tree.delete(item)
+        for col in columns:
+            self.result_tree.heading(col, text=col)
+            self.result_tree.column(col, width=160 if "公式变成" in col or col == "款色" else 90, anchor="center")
+
+        for row in self.preview_rows:
+            row_values = [row["款色"]]
+            for v in row["values"][start_idx:end_idx]:
+                row_values.extend([v["concat_value"], v["original_value"]])
+            self.result_tree.insert("", "end", values=row_values)
 
     def generate_preview(self):
         try:
@@ -549,11 +581,9 @@ class App(tk.Tk):
             self.show_detect_info(self.detect_result)
             self.preview_rows = WorkbookAnalyzer.build_preview(ws, self.detect_result)
             self.preview_page = 0
-            self.preview_group_pages = max(1, math.ceil(len(self.detect_result.size_columns) / PREVIEW_SIZE_GROUPS_PER_PAGE))
 
-            self.render_source_preview()
-            self.render_result_preview()
-
+            self.build_source_preview(self.detect_result)
+            self.build_result_preview(self.detect_result)
             self.confirm_preview_var.set(False)
             self.log(f"预览已生成，共展示前 {len(self.preview_rows)} 行有效数据。")
             if not self.preview_rows:
@@ -562,114 +592,21 @@ class App(tk.Tk):
             messagebox.showerror(APP_TITLE, str(e))
             self.log(f"生成预览失败：{e}")
 
-    def render_source_preview(self):
-        self.source_tree.delete(*self.source_tree.get_children())
-        if not self.detect_result:
-            return
-
-        columns = ["源数据行", "款色"] + [f"尺码{sc.size_no}" for sc in self.detect_result.size_columns]
-        self.source_tree["columns"] = columns
-        for col in columns:
-            self.source_tree.heading(col, text=col)
-
-        total_width = max(self.source_tree.winfo_width(), 980)
-        color_width = 180
-        row_width = 90
-        remain = max(80, (total_width - row_width - color_width) // max(1, len(columns) - 2))
-
-        self.source_tree.column("源数据行", width=row_width, anchor="center")
-        self.source_tree.column("款色", width=color_width, anchor="center")
-        for col in columns[2:]:
-            self.source_tree.column(col, width=remain, anchor="center")
-
-        for row in self.preview_rows:
-            values = [row["row_idx"], row["款色"]] + [item["original_value"] for item in row["values"]]
-            self.source_tree.insert("", "end", values=values)
-
-        self.source_preview_tip.configure(
-            text=f"这里直接展示 Excel 源表的关键列内容，共预览前 {len(self.preview_rows)} 行。"
-        )
-
     def prev_preview_page(self):
-        if not self.preview_rows:
-            return
-        if self.preview_page > 0:
+        if self.preview_page > 0 and self.detect_result is not None:
             self.preview_page -= 1
-            self.render_result_preview()
+            self.build_result_preview(self.detect_result)
 
     def next_preview_page(self):
-        if not self.preview_rows:
+        if self.detect_result is None:
             return
-        if self.preview_page < self.preview_group_pages - 1:
+        if self.preview_page + 1 < self.preview_group_pages:
             self.preview_page += 1
-            self.render_result_preview()
-
-    def render_result_preview(self):
-        self.result_tree.delete(*self.result_tree.get_children())
-        if not self.detect_result:
-            self.result_tree["columns"] = ()
-            self.preview_page_label.configure(text="预览页：1/1")
-            self.result_header_summary.configure(text="")
-            return
-
-        start = self.preview_page * PREVIEW_SIZE_GROUPS_PER_PAGE
-        end = start + PREVIEW_SIZE_GROUPS_PER_PAGE
-        visible_sizes = self.detect_result.size_columns[start:end]
-        self.preview_group_pages = max(1, math.ceil(len(self.detect_result.size_columns) / PREVIEW_SIZE_GROUPS_PER_PAGE))
-        self.preview_page_label.configure(text=f"预览页：{self.preview_page + 1}/{self.preview_group_pages}")
-
-        columns = ["款色"]
-        for sc in visible_sizes:
-            columns.append(f"公式变成_尺码{sc.size_no}")
-            columns.append(f"{sc.size_no}")
-
-        self.result_tree["columns"] = columns
-        for col in columns:
-            if col == "款色":
-                heading = "款色"
-            elif col.startswith("公式变成_"):
-                heading = "公式变成 / " + col.split("_", 1)[1]
-            else:
-                heading = col
-            self.result_tree.heading(col, text=heading)
-
-        self.result_tree.column("款色", width=170, anchor="center", stretch=False)
-        for col in columns[1:]:
-            if col.startswith("公式变成_"):
-                self.result_tree.column(col, width=165, anchor="center", stretch=False)
-            else:
-                self.result_tree.column(col, width=85, anchor="center", stretch=False)
-
-        for row in self.preview_rows:
-            values = [row["款色"]]
-            for item in row["values"][start:end]:
-                values.append(item["concat_value"])
-                values.append(item["original_value"])
-            self.result_tree.insert("", "end", values=values)
-
-        if visible_sizes:
-            self.result_header_summary.configure(
-                text=(
-                    f"当前显示分组：尺码{visible_sizes[0].size_no} 到 尺码{visible_sizes[-1].size_no}。"
-                    f" 导出到 Excel 时仍会按“模型_处理结果”模板和颜色格式生成。"
-                )
-            )
-        else:
-            self.result_header_summary.configure(text="")
-
-        if self.preview_group_pages > 1:
-            self.result_preview_tip.configure(
-                text=(
-                    f"每页展示最多 {PREVIEW_SIZE_GROUPS_PER_PAGE} 个尺码分组，预览已改成轻量表格，滚动更顺畅。"
-                )
-            )
-        else:
-            self.result_preview_tip.configure(text="当前页已完整展示全部尺码分组，预览已改成轻量表格。")
+            self.build_result_preview(self.detect_result)
 
     def process_and_save(self):
         input_path = self.input_path_var.get().strip()
         output_path = self.output_path_var.get().strip()
-
         if not input_path:
             messagebox.showwarning(APP_TITLE, "请先选择输入文件。")
             return
@@ -686,10 +623,6 @@ class App(tk.Tk):
             messagebox.showwarning(APP_TITLE, "请先勾选“我已核对预览结果”。")
             return
 
-        if os.path.abspath(input_path) == os.path.abspath(output_path):
-            if not messagebox.askyesno(APP_TITLE, "输入文件和输出文件相同。是否继续？继续后会直接覆盖原文件。"):
-                return
-
         detect = self.detect_result
         size_text = "、".join([f"尺码{s.size_no}" for s in detect.size_columns])
         summary = (
@@ -699,12 +632,16 @@ class App(tk.Tk):
             f"- 表头行：{detect.header_row}\n"
             f"- 款色列：{get_column_letter(detect.color_col_idx)}\n"
             f"- 尺码列：{size_text}\n"
-            f"- 输出格式：模板样式（模型_处理结果）\n"
+            f"- 结果格式：\n"
+            f"  第1行：空 + 尺码1/尺码2/...\n"
+            f"  第2行：款色 + 公式变成 + 1/2/...\n"
+            f"  第3行开始：款色+尺码号 与原值\n"
             f"- 保存到：{output_path}\n\n"
-            f"请再次确认。"
+            f"是否继续？"
         )
+
         if not messagebox.askyesno(APP_TITLE, summary):
-            self.log("用户取消了第一次执行确认。")
+            self.log("用户取消了执行确认。")
             return
 
         try:
