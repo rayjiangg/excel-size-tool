@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox
 
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
@@ -308,7 +308,6 @@ class App(tk.Tk):
         self.preview_page = 0
         self.preview_group_pages = 1
         self.result_header_widgets: List[tk.Widget] = []
-        self.result_cell_widgets: List[tk.Widget] = []
 
         self._build_ui()
 
@@ -418,20 +417,26 @@ class App(tk.Tk):
 
         self.result_preview_tip = ttk.Label(
             self.result_preview_tab,
-            text=f"每页展示最多 {PREVIEW_SIZE_GROUPS_PER_PAGE} 个尺码分组，直接按 Excel 模板样式显示。",
+            text=f"每页展示最多 {PREVIEW_SIZE_GROUPS_PER_PAGE} 个尺码分组，改为轻量表格预览，滚动会更顺畅。",
         )
         self.result_preview_tip.pack(anchor="w", padx=6)
 
-        self.result_canvas = tk.Canvas(self.result_preview_tab, highlightthickness=0, bg="#F7F7F7")
-        self.result_canvas.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
-        result_y = ttk.Scrollbar(self.result_preview_tab, orient="vertical", command=self.result_canvas.yview)
-        result_y.pack(side="right", fill="y", padx=(0, 6), pady=6)
-        self.result_canvas.configure(yscrollcommand=result_y.set)
+        self.result_header_summary = ttk.Label(
+            self.result_preview_tab,
+            text="",
+            foreground="#444444",
+        )
+        self.result_header_summary.pack(anchor="w", padx=6, pady=(0, 4))
 
-        self.result_inner = tk.Frame(self.result_canvas, bg="#F7F7F7")
-        self.result_canvas_window = self.result_canvas.create_window((0, 0), window=self.result_inner, anchor="nw")
-        self.result_inner.bind("<Configure>", self._on_result_inner_configure)
-        self.result_canvas.bind("<Configure>", self._on_result_canvas_configure)
+        result_tree_frame = ttk.Frame(self.result_preview_tab)
+        result_tree_frame.pack(fill="both", expand=True, padx=6, pady=6)
+        self.result_tree = ttk.Treeview(result_tree_frame, show="headings")
+        self.result_tree.pack(side="left", fill="both", expand=True)
+        result_y = ttk.Scrollbar(result_tree_frame, orient="vertical", command=self.result_tree.yview)
+        result_x = ttk.Scrollbar(result_tree_frame, orient="horizontal", command=self.result_tree.xview)
+        self.result_tree.configure(yscrollcommand=result_y.set, xscrollcommand=result_x.set)
+        result_y.pack(side="right", fill="y")
+        result_x.pack(side="bottom", fill="x")
 
         log_frame = ttk.LabelFrame(middle, text="日志", padding=10)
         middle.add(log_frame, weight=2)
@@ -439,13 +444,6 @@ class App(tk.Tk):
         self.log_text.pack(fill="both", expand=True)
 
         self.log("工具已启动。建议流程：加载工作簿 -> 自动识别 -> 生成预览 -> 勾选两项确认 -> 开始处理。")
-
-    def _on_result_inner_configure(self, _event=None):
-        self.result_canvas.configure(scrollregion=self.result_canvas.bbox("all"))
-
-    def _on_result_canvas_configure(self, event=None):
-        if event is not None:
-            self.result_canvas.itemconfig(self.result_canvas_window, width=event.width)
 
     def choose_input_file(self):
         path = filedialog.askopenfilename(
@@ -538,9 +536,10 @@ class App(tk.Tk):
         self.detect_info.delete("1.0", "end")
         self.source_tree.delete(*self.source_tree.get_children())
         self.source_tree["columns"] = ()
-        for widget in self.result_inner.winfo_children():
-            widget.destroy()
+        self.result_tree.delete(*self.result_tree.get_children())
+        self.result_tree["columns"] = ()
         self.preview_page_label.configure(text="预览页：1/1")
+        self.result_header_summary.configure(text="")
 
     def generate_preview(self):
         try:
@@ -605,30 +604,12 @@ class App(tk.Tk):
             self.preview_page += 1
             self.render_result_preview()
 
-    def _make_grid_label(self, parent, text, row, col, bg, bold=False, width=10, padx=0, pady=0):
-        lbl = tk.Label(
-            parent,
-            text="" if text is None else str(text),
-            bg=bg,
-            relief="solid",
-            bd=1,
-            font=("Microsoft YaHei UI", 10, "bold" if bold else "normal"),
-            anchor="center",
-            justify="center",
-            padx=padx,
-            pady=pady,
-        )
-        lbl.grid(row=row, column=col, sticky="nsew")
-        self.result_cell_widgets.append(lbl)
-        return lbl
-
     def render_result_preview(self):
-        for widget in self.result_inner.winfo_children():
-            widget.destroy()
-        self.result_cell_widgets.clear()
-
+        self.result_tree.delete(*self.result_tree.get_children())
         if not self.detect_result:
+            self.result_tree["columns"] = ()
             self.preview_page_label.configure(text="预览页：1/1")
+            self.result_header_summary.configure(text="")
             return
 
         start = self.preview_page * PREVIEW_SIZE_GROUPS_PER_PAGE
@@ -637,83 +618,53 @@ class App(tk.Tk):
         self.preview_group_pages = max(1, math.ceil(len(self.detect_result.size_columns) / PREVIEW_SIZE_GROUPS_PER_PAGE))
         self.preview_page_label.configure(text=f"预览页：{self.preview_page + 1}/{self.preview_group_pages}")
 
-        # configure columns
-        total_cols = 1 + len(visible_sizes) * 2
-        for col_idx in range(total_cols):
-            if col_idx == 0:
-                minsize = 150
-                weight = 3
-            elif col_idx % 2 == 1:
-                minsize = 150
-                weight = 3
+        columns = ["款色"]
+        for sc in visible_sizes:
+            columns.append(f"公式变成_尺码{sc.size_no}")
+            columns.append(f"{sc.size_no}")
+
+        self.result_tree["columns"] = columns
+        for col in columns:
+            if col == "款色":
+                heading = "款色"
+            elif col.startswith("公式变成_"):
+                heading = "公式变成 / " + col.split("_", 1)[1]
             else:
-                minsize = 70
-                weight = 2
-            self.result_inner.grid_columnconfigure(col_idx, weight=weight, minsize=minsize)
+                heading = col
+            self.result_tree.heading(col, text=heading)
 
-        # row 1 header
-        self._make_grid_label(self.result_inner, "", 0, 0, WHITE_HEX, width=12, pady=8)
-        col = 1
-        for sc in visible_sizes:
-            lbl = tk.Label(
-                self.result_inner,
-                text=f"尺码{sc.size_no}",
-                bg=WHITE_HEX,
-                relief="solid",
-                bd=1,
-                font=("Microsoft YaHei UI", 10, "normal"),
-                anchor="center",
-                pady=8,
+        self.result_tree.column("款色", width=170, anchor="center", stretch=False)
+        for col in columns[1:]:
+            if col.startswith("公式变成_"):
+                self.result_tree.column(col, width=165, anchor="center", stretch=False)
+            else:
+                self.result_tree.column(col, width=85, anchor="center", stretch=False)
+
+        for row in self.preview_rows:
+            values = [row["款色"]]
+            for item in row["values"][start:end]:
+                values.append(item["concat_value"])
+                values.append(item["original_value"])
+            self.result_tree.insert("", "end", values=values)
+
+        if visible_sizes:
+            self.result_header_summary.configure(
+                text=(
+                    f"当前显示分组：尺码{visible_sizes[0].size_no} 到 尺码{visible_sizes[-1].size_no}。"
+                    f" 导出到 Excel 时仍会按“模型_处理结果”模板和颜色格式生成。"
+                )
             )
-            lbl.grid(row=0, column=col, columnspan=2, sticky="nsew")
-            self.result_cell_widgets.append(lbl)
-            col += 2
-
-        # row 2 header
-        self._make_grid_label(self.result_inner, "款色", 1, 0, BLUE_HEX, bold=True, pady=8)
-        col = 1
-        for sc in visible_sizes:
-            self._make_grid_label(self.result_inner, "公式变成", 1, col, YELLOW_HEX, bold=True, pady=8)
-            self._make_grid_label(self.result_inner, sc.size_no, 1, col + 1, BLUE_HEX, bold=True, pady=8)
-            col += 2
-
-        # data rows
-        for r_idx, row in enumerate(self.preview_rows, start=2):
-            self._make_grid_label(self.result_inner, row["款色"], r_idx, 0, WHITE_HEX, pady=6)
-            values_slice = row["values"][start:end]
-            col = 1
-            for item in values_slice:
-                self._make_grid_label(self.result_inner, item["concat_value"], r_idx, col, WHITE_HEX, pady=6)
-                self._make_grid_label(self.result_inner, item["original_value"], r_idx, col + 1, WHITE_HEX, pady=6)
-                col += 2
-
-        note_row = len(self.preview_rows) + 3
-        note_text = "说明：黄色列为公式变成结果，蓝色列为对应尺码原值。"
-        note = tk.Label(
-            self.result_inner,
-            text=note_text,
-            fg="#FF0000",
-            bg="#F7F7F7",
-            anchor="w",
-            justify="left",
-            font=("Microsoft YaHei UI", 10, "bold"),
-            pady=6,
-        )
-        note.grid(row=note_row, column=0, columnspan=total_cols, sticky="w")
-        self.result_cell_widgets.append(note)
+        else:
+            self.result_header_summary.configure(text="")
 
         if self.preview_group_pages > 1:
             self.result_preview_tip.configure(
                 text=(
-                    f"每页展示最多 {PREVIEW_SIZE_GROUPS_PER_PAGE} 个尺码分组，当前显示："
-                    f"尺码{visible_sizes[0].size_no} 到 尺码{visible_sizes[-1].size_no}。"
+                    f"每页展示最多 {PREVIEW_SIZE_GROUPS_PER_PAGE} 个尺码分组，预览已改成轻量表格，滚动更顺畅。"
                 )
             )
         else:
-            self.result_preview_tip.configure(text="当前页已完整展示全部尺码分组。")
-
-        self.result_canvas.yview_moveto(0)
-        self._on_result_inner_configure()
+            self.result_preview_tip.configure(text="当前页已完整展示全部尺码分组，预览已改成轻量表格。")
 
     def process_and_save(self):
         input_path = self.input_path_var.get().strip()
@@ -754,12 +705,6 @@ class App(tk.Tk):
         )
         if not messagebox.askyesno(APP_TITLE, summary):
             self.log("用户取消了第一次执行确认。")
-            return
-
-        typed = simpledialog.askstring(APP_TITLE, "数据重要，请输入：确认处理")
-        if typed != "确认处理":
-            self.log("最终确认未通过，已取消处理。")
-            messagebox.showinfo(APP_TITLE, "未输入“确认处理”，本次未执行。")
             return
 
         try:
